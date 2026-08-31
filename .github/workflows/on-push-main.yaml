@@ -20,7 +20,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-release-promotion
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: false
       dry_run: true
       values: |
@@ -40,7 +40,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-release-promotion-pr
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: false
       promotion_pr: true
       dry_run: true
@@ -61,7 +61,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-release-promotion-pr-merge
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: false
       promotion_mode: pull-request-merge
       dry_run: true
@@ -82,7 +82,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-preview-promotion
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: true
       dry_run: true
       values: |
@@ -102,7 +102,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-preview-promotion-pr
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: true
       promotion_pr: true
       dry_run: true
@@ -123,7 +123,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-preview-promotion-pr-merge
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: true
       promotion_mode: pull-request-merge
       dry_run: true

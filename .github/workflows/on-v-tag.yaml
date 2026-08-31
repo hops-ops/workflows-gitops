@@ -21,7 +21,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-v-tag-release-promotion
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: false
       values: |
         env:
