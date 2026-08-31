@@ -35,6 +35,12 @@ on:
         default: false
         description: "If true, creates a PR in the environment repository instead of pushing directly"
 
+      promotion_mode:
+        type: string
+        required: false
+        default: ""
+        description: "Promotion mode: direct, pull-request, or pull-request-merge. When set, overrides promotion_pr and create_pull_request."
+
       create_pull_request:
         type: boolean
         required: false
@@ -103,6 +109,7 @@ jobs:
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_PREVIEW: ${{ inputs.preview }}
         INPUT_PROMOTION_PR: ${{ inputs.promotion_pr }}
+        INPUT_PROMOTION_MODE: ${{ inputs.promotion_mode }}
         INPUT_CREATE_PULL_REQUEST: ${{ inputs.create_pull_request }}
         INPUT_DESTINATION_PATH: ${{ inputs.destination_path }}
       with:
@@ -115,11 +122,25 @@ jobs:
             .replace(/^-|-$/g, '');
 
           // Get inputs from env (workflow inputs aren't directly available in github-script)
+          const legacyPromotionPR = process.env.INPUT_PROMOTION_PR === 'true'
+            || process.env.INPUT_CREATE_PULL_REQUEST === 'true';
+          const requestedPromotionMode = process.env.INPUT_PROMOTION_MODE.trim();
+          const validPromotionModes = ['direct', 'pull-request', 'pull-request-merge'];
+
+          if (requestedPromotionMode && !validPromotionModes.includes(requestedPromotionMode)) {
+            core.setFailed(`Invalid promotion_mode: ${requestedPromotionMode}. Expected one of: ${validPromotionModes.join(', ')}`);
+            return;
+          }
+
+          const promotionMode = requestedPromotionMode
+            || (legacyPromotionPR ? 'pull-request' : 'direct');
+
           const inputs = {
             name: process.env.INPUT_NAME,
             project: process.env.INPUT_PROJECT,
             preview: process.env.INPUT_PREVIEW === 'true',
-            promotionPR: process.env.INPUT_PROMOTION_PR === 'true' || process.env.INPUT_CREATE_PULL_REQUEST === 'true',
+            promotionMode,
+            promotionPR: promotionMode !== 'direct',
             destinationPath: process.env.INPUT_DESTINATION_PATH,
           };
 
@@ -201,6 +222,7 @@ jobs:
           const outputs = {
             mode,
             type,
+            promotion_mode: inputs.promotionMode,
             promotion_pr: inputs.promotionPR,
             name: config.name,
             file_name: config.fileName,
@@ -479,6 +501,7 @@ jobs:
         echo "Dry Run: ${{ inputs.dry_run }}"
         echo "Has Changes: ${{ steps.commit_changes.outputs.has_changes }}"
         echo "Changes committed: ${{ steps.commit_changes.outputs.committed_changes }}"
+        echo "Promotion mode: ${{ steps.config.outputs.promotion_mode }}"
         echo "Promotion PR: ${{ steps.config.outputs.promotion_pr }}"
         echo "Preview: ${{ inputs.preview }}"
         echo "Event Type: ${{ github.event_name }}"
@@ -578,6 +601,30 @@ jobs:
           echo "Creating new PR with head branch ${{ env.PR_BRANCH }} targeting ${DEFAULT_BRANCH}"
           gh pr create --repo ${{ inputs.environment_repository }} --title "${{ env.PR_TITLE }}" --body "${{ env.PR_BODY }}" --base ${DEFAULT_BRANCH} --head ${{ env.PR_BRANCH }}
         fi
+
+    - name: "[Promotion PR] Merge Pull Request"
+      if: inputs.dry_run == false && steps.config.outputs.promotion_mode == 'pull-request-merge' && steps.commit_changes.outputs.committed_changes == 'true'
+      env:
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        PR_BRANCH: ${{ env.PR_BRANCH }}
+      run: |
+        PR_NUMBER=$(gh pr list \
+          --repo ${{ inputs.environment_repository }} \
+          --head "${PR_BRANCH}" \
+          --state open \
+          --json number \
+          --jq '.[0].number')
+
+        if [ -z "${PR_NUMBER}" ]; then
+          echo "No open promotion PR found for branch ${PR_BRANCH}"
+          exit 1
+        fi
+
+        echo "Squash-merging promotion PR #${PR_NUMBER}"
+        gh pr merge "${PR_NUMBER}" \
+          --repo ${{ inputs.environment_repository }} \
+          --squash \
+          --delete-branch
 
     - name: "[Dry Run][Preview][Promotion PR] Create Pull Request"
       if: inputs.dry_run && steps.config.outputs.promotion_pr == 'true' && inputs.preview && steps.commit_changes.outputs.has_changes == 'true'

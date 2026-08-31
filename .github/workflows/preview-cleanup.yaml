@@ -1,72 +1,233 @@
 name: gitops-preview-cleanup
+
 on:
   workflow_call:
     inputs:
       environment_repository:
         required: true
         type: string
+      name:
+        required: false
+        type: string
+        default: ""
+        description: "Application name. Defaults to the calling repository name."
+      destination_path:
+        required: false
+        type: string
+        default: ".gitops/deploy/helm/templates"
+      promotion_mode:
+        required: false
+        type: string
+        default: "direct"
+        description: "Cleanup mode: direct, pull-request, or pull-request-merge."
+      auth_mode:
+        required: false
+        type: string
+        default: "pat"
+        description: "Authentication mode: pat or app."
     secrets:
       GH_ORG_TOKEN:
-        required: true
+        required: false
+        description: "Legacy personal access token used when auth_mode is pat."
+      GH_APP_ID:
+        required: false
+      GH_APP_KEY:
+        required: false
 
 jobs:
-  
   gitops-preview-cleanup:
-    name: Gitops Preview Cleanup
+    name: GitOps Preview Cleanup
     runs-on: ubuntu-latest
 
     permissions:
       issues: write
       pull-requests: write
       contents: write
-    
+
     steps:
+      - name: Generate GitHub App Token
+        if: inputs.auth_mode == 'app'
+        id: generate-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_KEY }}
+          owner: ${{ github.repository_owner }}
 
-    - name: Checkout Preview Environments Project
-      uses: actions/checkout@v7
-      with: 
-        repository: ${{ inputs.environment_repository }}
-        persist-credentials: false
+      - name: Resolve Auth Token
+        id: auth
+        env:
+          APP_TOKEN: ${{ steps.generate-token.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          case "${AUTH_MODE}" in
+            app)
+              TOKEN="${APP_TOKEN}"
+              ;;
+            pat)
+              TOKEN="${PAT_TOKEN}"
+              ;;
+            *)
+              echo "Unsupported auth_mode: ${AUTH_MODE}"
+              exit 1
+              ;;
+          esac
 
-    - name: Commit Preview Env Changes
-      run: |
-        rm helm/templates/${{ github.event.repository.name }}-pr-${{ github.event.pull_request.number }}.yaml
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"   
-        git add .
-        git commit -m "feat(${{ github.event.repository.name }}): ${{ github.event.repository.name }}-pr-${{ github.event.pull_request.number }}"
+          if [ -z "${TOKEN}" ]; then
+            echo "No token resolved for auth_mode ${AUTH_MODE}"
+            exit 1
+          fi
 
-    - name: Push Preview Env Changes
-      run: |
-        # Detect default branch from remote with fallback
-        DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-        if [ -z "$DEFAULT_BRANCH" ]; then
-          # Fallback: query remote directly
-          DEFAULT_BRANCH=$(git ls-remote --symref origin HEAD 2>/dev/null | grep '^ref:' | sed 's@^ref: refs/heads/@@' | sed 's@\s.*@@')
-        fi
-        if [ -z "$DEFAULT_BRANCH" ]; then
-          # Last resort fallback
-          DEFAULT_BRANCH="main"
-          echo "Warning: Could not detect default branch, falling back to 'main'"
-        fi
-        echo "Pushing to default branch: ${DEFAULT_BRANCH}"
-        git push https://x-access-token:${{ secrets.GH_ORG_TOKEN }}@github.com/${{ inputs.environment_repository }}.git HEAD:refs/heads/${DEFAULT_BRANCH}
+          echo "token=${TOKEN}" >> "${GITHUB_OUTPUT}"
 
-    - name: Find Comment
-      uses: peter-evans/find-comment@v4
-      id: fc
-      with:
-        issue-number: ${{ github.event.pull_request.number }}
-        comment-author: 'github-actions[bot]'
-        body-includes: Your preview environment has been removed.
+      - name: Checkout Preview Environments Project
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.environment_repository }}
+          token: ${{ steps.auth.outputs.token }}
+          persist-credentials: false
 
-    - name: Create comment about garbage collection
-      uses: peter-evans/create-or-update-comment@v5
-      with:
-        comment-id: ${{ steps.fc.outputs.comment-id }}
-        issue-number: ${{ github.event.pull_request.number }}
-        body: |
-          Your preview environment has been removed. It will be garbage collected soon.
+      - name: Resolve Cleanup Configuration
+        id: config
+        env:
+          INPUT_NAME: ${{ inputs.name }}
+          INPUT_PROMOTION_MODE: ${{ inputs.promotion_mode }}
+          DESTINATION_PATH: ${{ inputs.destination_path }}
+          SOURCE_REPOSITORY_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          case "${INPUT_PROMOTION_MODE}" in
+            direct|pull-request|pull-request-merge)
+              ;;
+            *)
+              echo "Unsupported promotion_mode: ${INPUT_PROMOTION_MODE}"
+              exit 1
+              ;;
+          esac
 
-          To create a new preview environment, open a new pull request.
-        edit-mode: replace
+          APP_NAME="${INPUT_NAME:-${SOURCE_REPOSITORY_NAME}}"
+
+          if [[ ! "${APP_NAME}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "Invalid application name: ${APP_NAME}"
+            exit 1
+          fi
+
+          if [[ "${DESTINATION_PATH}" = /* || "${DESTINATION_PATH}" =~ (^|/)\.\.(/|$) ]]; then
+            echo "destination_path must stay within the environment repository"
+            exit 1
+          fi
+
+          FILE_PATH="${DESTINATION_PATH}/${APP_NAME}-pr-${PR_NUMBER}.yaml"
+          PR_BRANCH="cleanup/${APP_NAME}-pr-${PR_NUMBER}-${RUN_ID}-${RUN_ATTEMPT}"
+
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+          if [ -z "${DEFAULT_BRANCH}" ]; then
+            DEFAULT_BRANCH=$(git ls-remote --symref origin HEAD 2>/dev/null | grep '^ref:' | sed 's@^ref: refs/heads/@@' | sed 's@\s.*@@')
+          fi
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+
+          echo "file_path=${FILE_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "pr_branch=${PR_BRANCH}" >> "${GITHUB_OUTPUT}"
+          echo "default_branch=${DEFAULT_BRANCH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit Preview Environment Removal
+        id: commit
+        env:
+          FILE_PATH: ${{ steps.config.outputs.file_path }}
+          PR_BRANCH: ${{ steps.config.outputs.pr_branch }}
+          PROMOTION_MODE: ${{ inputs.promotion_mode }}
+        run: |
+          if [ ! -f "${FILE_PATH}" ]; then
+            echo "Preview manifest is already absent: ${FILE_PATH}"
+            echo "committed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${PROMOTION_MODE}" != "direct" ]; then
+            git checkout -B "${PR_BRANCH}"
+          fi
+
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git rm -- "${FILE_PATH}"
+          git commit -m "chore: remove preview for PR ${{ github.event.pull_request.number }}"
+          echo "committed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Push Preview Environment Removal
+        if: steps.commit.outputs.committed == 'true' && inputs.promotion_mode == 'direct'
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          ENVIRONMENT_REPOSITORY: ${{ inputs.environment_repository }}
+          DEFAULT_BRANCH: ${{ steps.config.outputs.default_branch }}
+        run: |
+          git push \
+            "https://x-access-token:${AUTH_TOKEN}@github.com/${ENVIRONMENT_REPOSITORY}.git" \
+            "HEAD:refs/heads/${DEFAULT_BRANCH}"
+
+      - name: Create Cleanup Pull Request
+        if: steps.commit.outputs.committed == 'true' && inputs.promotion_mode != 'direct'
+        id: cleanup-pr
+        env:
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
+          PR_BRANCH: ${{ steps.config.outputs.pr_branch }}
+          DEFAULT_BRANCH: ${{ steps.config.outputs.default_branch }}
+          ENVIRONMENT_REPOSITORY: ${{ inputs.environment_repository }}
+        run: |
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${ENVIRONMENT_REPOSITORY}.git" \
+            "HEAD:refs/heads/${PR_BRANCH}"
+
+          PR_NUMBER=$(gh pr list \
+            --repo "${ENVIRONMENT_REPOSITORY}" \
+            --head "${PR_BRANCH}" \
+            --state open \
+            --json number \
+            --jq '.[0].number')
+
+          if [ -z "${PR_NUMBER}" ]; then
+            PR_URL=$(gh pr create \
+              --repo "${ENVIRONMENT_REPOSITORY}" \
+              --base "${DEFAULT_BRANCH}" \
+              --head "${PR_BRANCH}" \
+              --title "Remove preview for ${{ github.repository }}#${{ github.event.pull_request.number }}" \
+              --body "Removes the preview environment for ${{ github.event.pull_request.html_url }}.")
+            PR_NUMBER=${PR_URL##*/}
+          fi
+
+          echo "number=${PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+
+      - name: Merge Cleanup Pull Request
+        if: steps.commit.outputs.committed == 'true' && inputs.promotion_mode == 'pull-request-merge'
+        env:
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
+          PR_NUMBER: ${{ steps.cleanup-pr.outputs.number }}
+          ENVIRONMENT_REPOSITORY: ${{ inputs.environment_repository }}
+        run: |
+          gh pr merge "${PR_NUMBER}" \
+            --repo "${ENVIRONMENT_REPOSITORY}" \
+            --squash \
+            --delete-branch
+
+      - name: Find Cleanup Comment
+        if: steps.commit.outputs.committed == 'true'
+        uses: peter-evans/find-comment@v4
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: Your preview environment has been removed.
+
+      - name: Create Cleanup Comment
+        if: steps.commit.outputs.committed == 'true'
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            Your preview environment has been removed. It will be garbage collected soon.
+
+            To create a new preview environment, reopen the pull request and add the preview label.
+          edit-mode: replace

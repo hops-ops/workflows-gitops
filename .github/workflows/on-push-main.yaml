@@ -20,7 +20,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-release-promotion
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: false
       dry_run: true
       values: |
@@ -40,7 +40,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-release-promotion-pr
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: false
       promotion_pr: true
       dry_run: true
@@ -54,6 +54,27 @@ jobs:
       GH_APP_ID: ${{ secrets.GH_APP_ID }}
       GH_APP_KEY: ${{ secrets.GH_APP_KEY }}
 
+  test-release-promotion-pr-merge:
+    name: "Dry Run - Release Promotion PR + Merge"
+    uses: ./.github/workflows/argocd-promote-helm.yaml
+    with:
+      auth_mode: app
+      project: test-project
+      environment_name: on-push-main-release-promotion-pr-merge
+      environment_repository: hops-ops/test-gitops
+      preview: false
+      promotion_mode: pull-request-merge
+      dry_run: true
+      values: |
+        env:
+          test: "true"
+          type: "release"
+          method: "promotion-pr-merge"
+          event: "push-main"
+    secrets:
+      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_KEY: ${{ secrets.GH_APP_KEY }}
+
   test-preview-promotion:
     name: "Dry Run - Preview Promotion"
     uses: ./.github/workflows/argocd-promote-helm.yaml
@@ -61,7 +82,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-preview-promotion
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: true
       dry_run: true
       values: |
@@ -81,7 +102,7 @@ jobs:
       auth_mode: app
       project: test-project
       environment_name: on-push-main-preview-promotion-pr
-      environment_repository: unbounded-tech/test-gitops
+      environment_repository: hops-ops/test-gitops
       preview: true
       promotion_pr: true
       dry_run: true
@@ -95,13 +116,36 @@ jobs:
       GH_APP_ID: ${{ secrets.GH_APP_ID }}
       GH_APP_KEY: ${{ secrets.GH_APP_KEY }}
 
+  test-preview-promotion-pr-merge:
+    name: "Dry Run - Preview Promotion PR + Merge"
+    uses: ./.github/workflows/argocd-promote-helm.yaml
+    with:
+      auth_mode: app
+      project: test-project
+      environment_name: on-push-main-preview-promotion-pr-merge
+      environment_repository: hops-ops/test-gitops
+      preview: true
+      promotion_mode: pull-request-merge
+      dry_run: true
+      values: |
+        env:
+          test: "true"
+          type: "preview"
+          method: "promotion-pr-merge"
+          event: "push-main"
+    secrets:
+      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_KEY: ${{ secrets.GH_APP_KEY }}
+
   version-and-tag:
     name: Version and Tag
     needs:
       - test-release-promotion
       - test-release-promotion-pr
+      - test-release-promotion-pr-merge
       - test-preview-promotion
       - test-preview-promotion-pr
+      - test-preview-promotion-pr-merge
     uses: unbounded-tech/workflow-vnext-tag/.github/workflows/workflow.yaml@v1.22.2
     secrets:
       DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}

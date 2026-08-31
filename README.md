@@ -2,6 +2,8 @@
 
 This repository contains a reusable GitHub Actions workflow for promoting Helm charts to different environments using ArgoCD. The workflow automates the process of generating ArgoCD Application manifests from Helm charts and committing them to environment-specific GitOps repositories.
 
+> Active maintenance moved to [`hops-ops/workflows-gitops`](https://github.com/hops-ops/workflows-gitops) with v2. The v2.0.0 migration release is published from both organizations for compatibility; future releases are published from `hops-ops`.
+
 ## Overview
 
 The `argocd-promote-helm` workflow is designed to streamline the promotion of applications across multiple environments (e.g., local, staging, production, previews) by leveraging ArgoCD's GitOps approach with the "Application of Applications" pattern.
@@ -74,7 +76,7 @@ The workflow uses the following concepts:
 | Concept | Options | Description |
 |---------|---------|-------------|
 | **Type** | `Release` / `Preview` | `Release` (preview=false) promotes a versioned release. `Preview` (preview=true) promotes a preview with extra resources (usually a dynamically created environment). |
-| **Method** | `Promotion` / `Promotion PR` | `Promotion` pushes directly to the environment repo. `Promotion PR` creates a PR for review before merging. |
+| **Method** | `direct` / `pull-request` / `pull-request-merge` | Push directly, create a PR for review, or create and immediately squash-merge a PR. |
 | **Event Mode** | `PR Event` / `Push Event` | Auto-detected from `github.event_name`. Affects naming and PR commenting for previews. |
 
 ### Configuration Matrix
@@ -83,8 +85,10 @@ The workflow uses the following concepts:
 |------|--------|----------|
 | Release | Promotion | Production releases that auto-sync |
 | Release | Promotion PR | Production releases requiring approval |
+| Release | Promotion PR + Merge | Automated releases that must satisfy PR-only branch rules |
 | Preview | Promotion | Previews that auto-sync |
 | Preview | Promotion PR | Previews requiring approval |
+| Preview | Promotion PR + Merge | Automated previews that must satisfy PR-only branch rules |
 
 ## Prerequisites
 
@@ -138,6 +142,7 @@ To set up a GitHub App:
 | `environment_name` | string | true | - | Environment name for GitHub environment protection |
 | `environment_repository` | string | true | - | GitOps repository for the environment |
 | `promotion_pr` | boolean | false | false | If true, creates a PR in the environment repository instead of pushing directly (Promotion PR method) |
+| `promotion_mode` | string | false | Legacy-derived | `direct`, `pull-request`, or `pull-request-merge`. When set, overrides `promotion_pr` and `create_pull_request`. |
 | `values` | string | false | "" | Additional Helm values as YAML string |
 | `preview` | boolean | false | false | If true, promotes a preview (Preview type). Event mode is auto-detected. |
 | `comment` | string | false | Default preview comment | Comment body for previews (PR Event only) |
@@ -194,7 +199,7 @@ jobs:
   promote:
     name: "Release Promotion"
     needs: release
-    uses: unbounded-tech/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v1
+    uses: hops-ops/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v2
     secrets:
       GH_PAT: ${{ secrets.GH_ORG_ACTIONS_REPO_WRITE_PACKAGES }}
     with:
@@ -213,7 +218,7 @@ Same as above but using GitHub App authentication:
   promote:
     name: "Release Promotion"
     needs: release
-    uses: unbounded-tech/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v1
+    uses: hops-ops/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v2
     secrets:
       GH_APP_ID: ${{ secrets.GH_APP_ID }}
       GH_APP_KEY: ${{ secrets.GH_APP_KEY }}
@@ -234,7 +239,7 @@ Use this workflow when you want releases to require approval before being promot
   promote:
     name: "Release Promotion PR"
     needs: release
-    uses: unbounded-tech/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v1
+    uses: hops-ops/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v2
     secrets:
       GH_PAT: ${{ secrets.GH_ORG_ACTIONS_REPO_WRITE_PACKAGES }}
     with:
@@ -247,6 +252,15 @@ Use this workflow when you want releases to require approval before being promot
 ```
 
 ### [Preview][Promotion PR] - Preview on Pull Request
+
+For protected environment branches that require pull requests but do not require manual approval, set:
+
+```yaml
+    with:
+      promotion_mode: pull-request-merge
+```
+
+The workflow creates a normal promotion PR, immediately squash-merges it, and deletes the promotion branch. A blocked merge fails the workflow and leaves the PR open for inspection.
 
 Use this workflow to promote previews for pull requests. The workflow will comment on the PR with the preview status. Event mode is auto-detected as `PR Event`.
 
@@ -285,7 +299,7 @@ jobs:
     needs:
       - publish-containers
     if: contains(github.event.pull_request.labels.*.name, 'preview')
-    uses: unbounded-tech/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v1
+    uses: hops-ops/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v2
     secrets:
       GH_PAT: ${{ secrets.GH_ORG_ACTIONS_REPO_WRITE_PACKAGES }}
     permissions:
@@ -342,7 +356,7 @@ jobs:
     name: "Preview Promotion PR"
     needs:
       - publish-containers
-    uses: unbounded-tech/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v1
+    uses: hops-ops/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v2
     secrets:
       GH_PAT: ${{ secrets.GH_ORG_ACTIONS_REPO_WRITE_PACKAGES }}
     permissions:
@@ -371,7 +385,7 @@ Use `dry_run: true` to test the workflow without making any changes. When trigge
 ```yaml
   test-workflow:
     name: "Dry Run - Preview Promotion PR"
-    uses: unbounded-tech/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v1
+    uses: hops-ops/workflows-gitops/.github/workflows/argocd-promote-helm.yaml@v2
     secrets:
       GH_PAT: ${{ secrets.GITHUB_TOKEN }}
     with:
@@ -391,4 +405,5 @@ Use `dry_run: true` to test the workflow without making any changes. When trigge
 - For previews, the workflow automatically generates unique namespaces and application names based on the PR number or branch name.
 - The workflow merges existing Helm values with new ones to preserve environment-specific configurations.
 - When `promotion_pr: true`, changes are committed to a branch and a PR is created for review before merging.
+- Use `promotion_mode: pull-request-merge` when automation should satisfy PR-only branch rules without granting a ruleset bypass. The workflow squash-merges the PR and deletes its branch; if protection blocks the merge, the workflow fails and leaves the PR visible.
 - **GitHub App vs PAT**: GitHub Apps are recommended for organizations as they provide better security (no personal token exposure), higher API rate limits, and more granular repository access control.
