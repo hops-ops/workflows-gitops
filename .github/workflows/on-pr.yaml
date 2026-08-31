@@ -3,6 +3,11 @@ name: on-pr
 on:
   pull_request:
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 jobs:
 
   # Release promotions would not normally go in PRs, but we include them here for testing purposes
