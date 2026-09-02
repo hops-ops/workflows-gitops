@@ -146,10 +146,24 @@ jobs:
 
           // Detect mode and type
           const pullRequestEvents = ['pull_request', 'pull_request_target'];
-          const mode = pullRequestEvents.includes(context.eventName) ? 'pr' : 'push';
+          const isPullRequestEvent = pullRequestEvents.includes(context.eventName);
+          const pr = context.payload.pull_request;
+
+          if (isPullRequestEvent && !pr) {
+            core.setFailed(`Missing pull request payload for ${context.eventName}`);
+            return;
+          }
+
+          const baseRepository = `${context.repo.owner}/${context.repo.repo}`;
+          const headRepository = pr?.head?.repo?.full_name;
+          if (isPullRequestEvent && headRepository !== baseRepository) {
+            core.setFailed(`Fork pull requests are not supported: expected ${baseRepository}, received ${headRepository || 'unknown'}`);
+            return;
+          }
+
+          const mode = isPullRequestEvent ? 'pr' : 'push';
           const type = inputs.preview ? 'preview' : 'release';
           const repoName = inputs.name || context.repo.repo;
-          const pr = context.payload.pull_request;
 
           // Compute config based on type and mode
           let config;
@@ -353,6 +367,12 @@ jobs:
       run: |
         mkdir -p environment/${{ inputs.destination_path }}
 
+        # A values file preserves revisions containing Helm --set delimiters.
+        jq -n \
+          --arg targetRevision "$TARGET_REVISION" \
+          '{application: {targetRevision: $targetRevision}}' \
+          > target-revision-values.json
+
         # Build preview-specific flags
         PREVIEW_FLAGS=""
         if [ "${{ inputs.preview }}" == "true" ]; then
@@ -360,8 +380,8 @@ jobs:
         fi
 
         helm template ${{ inputs.promotion_chart_path }} \
+          --values target-revision-values.json \
           --set application.name=${{ env.NAME }} \
-          --set application.targetRevision=${TARGET_REVISION} \
           --set application.repository=https://github.com/${{ github.repository }}.git \
           --set application.destination.namespace=${NAMESPACE} \
           --set project=${{ inputs.project }} \

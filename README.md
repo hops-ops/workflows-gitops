@@ -77,7 +77,7 @@ The workflow uses the following concepts:
 |---------|---------|-------------|
 | **Type** | `Release` / `Preview` | `Release` (preview=false) promotes a versioned release. `Preview` (preview=true) promotes a preview with extra resources (usually a dynamically created environment). |
 | **Method** | `direct` / `pull-request` / `pull-request-merge` | Push directly, create a PR for review, or create and immediately squash-merge a PR. |
-| **Event Mode** | `PR Event` / `Push Event` | Auto-detected from `github.event_name`; both `pull_request` and `pull_request_target` use PR mode. Affects naming and PR commenting for previews. |
+| **Event Mode** | `PR Event` / `Push Event` | Auto-detected from `github.event_name`; both `pull_request` and `pull_request_target` use PR mode. Fork pull requests are rejected. Affects naming and PR commenting for previews. |
 
 ### Configuration Matrix
 
