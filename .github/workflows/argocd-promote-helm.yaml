@@ -722,9 +722,16 @@ jobs:
           const https = require('node:https');
           const net = require('node:net');
 
+          const fail = (type, message, pendingUrls = []) => {
+            core.setOutput('failure_type', type);
+            core.setOutput('failure_message', message);
+            core.setOutput('pending_urls', pendingUrls.join('\n'));
+            core.setFailed(message);
+          };
+
           const timeoutSeconds = Number(process.env.PREVIEW_READINESS_TIMEOUT_SECONDS);
           if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) {
-            core.setFailed('preview_readiness_timeout_seconds must be an integer between 1 and 3600');
+            fail('validation', 'preview_readiness_timeout_seconds must be an integer between 1 and 3600');
             return;
           }
 
@@ -735,37 +742,43 @@ jobs:
           const uniqueUrls = [...new Set(rawUrls)];
 
           if (uniqueUrls.length === 0) {
-            core.setFailed('preview_urls must contain at least one non-empty URL');
+            fail('validation', 'preview_urls must contain at least one non-empty URL');
             return;
           }
           if (uniqueUrls.length > 20) {
-            core.setFailed('preview_urls supports at most 20 URLs');
+            fail('validation', 'preview_urls supports at most 20 URLs');
             return;
           }
 
-          const endpoints = uniqueUrls.map((value) => {
-            let url;
-            try {
-              url = new URL(value);
-            } catch {
-              throw new Error(`Invalid preview URL: ${value}`);
-            }
+          let endpoints;
+          try {
+            endpoints = uniqueUrls.map((value) => {
+              let url;
+              try {
+                url = new URL(value);
+              } catch {
+                throw new Error(`Invalid preview URL: ${value}`);
+              }
 
-            if (url.protocol !== 'https:') {
-              throw new Error(`Preview URL must use HTTPS: ${value}`);
-            }
-            if (url.username || url.password) {
-              throw new Error(`Preview URL must not contain credentials: ${value}`);
-            }
-            if (url.port && url.port !== '443') {
-              throw new Error(`Preview URL must use port 443: ${value}`);
-            }
-            if (net.isIP(url.hostname) !== 0) {
-              throw new Error(`Preview URL must use a DNS hostname: ${value}`);
-            }
+              if (url.protocol !== 'https:') {
+                throw new Error(`Preview URL must use HTTPS: ${value}`);
+              }
+              if (url.username || url.password) {
+                throw new Error(`Preview URL must not contain credentials: ${value}`);
+              }
+              if (url.port && url.port !== '443') {
+                throw new Error(`Preview URL must use port 443: ${value}`);
+              }
+              if (net.isIP(url.hostname) !== 0) {
+                throw new Error(`Preview URL must use a DNS hostname: ${value}`);
+              }
 
-            return { value, url };
-          });
+              return { value, url };
+            });
+          } catch (error) {
+            fail('validation', error.message);
+            return;
+          }
 
           const isPublicIpv4 = (address) => {
             const octets = address.split('.').map(Number);
@@ -787,10 +800,22 @@ jobs:
             );
           };
 
-          const resolvePublicAddresses = async (hostname) => {
+          const remainingMilliseconds = (deadline) => Math.max(0, deadline - Date.now());
+
+          const resolvePublicAddresses = async (hostname, deadline) => {
             const resolver = new Resolver();
             resolver.setServers(['1.1.1.1', '1.0.0.1']);
-            const answers = await resolver.resolve4(hostname);
+            const timeoutMilliseconds = remainingMilliseconds(deadline);
+            if (timeoutMilliseconds === 0) {
+              throw new Error('readiness deadline exceeded');
+            }
+            const timer = setTimeout(() => resolver.cancel(), timeoutMilliseconds);
+            let answers;
+            try {
+              answers = await resolver.resolve4(hostname);
+            } finally {
+              clearTimeout(timer);
+            }
             const addresses = [...new Set(answers)].filter(isPublicIpv4);
             if (addresses.length === 0) {
               throw new Error(`${hostname} has no public A records`);
@@ -798,7 +823,12 @@ jobs:
             return addresses;
           };
 
-          const probe = (endpoint, address) => new Promise((resolve, reject) => {
+          const probe = (endpoint, address, deadline) => new Promise((resolve, reject) => {
+            const timeoutMilliseconds = Math.min(10_000, remainingMilliseconds(deadline));
+            if (timeoutMilliseconds === 0) {
+              reject(new Error('readiness deadline exceeded'));
+              return;
+            }
             const request = https.request(endpoint.url, {
               method: 'HEAD',
               headers: {
@@ -811,8 +841,8 @@ jobs:
                   callback(null, address, 4);
                 }
               },
-              timeout: 10_000,
             }, (response) => {
+              clearTimeout(timer);
               response.resume();
               const status = response.statusCode || 0;
               if (status >= 200 && status < 500) {
@@ -821,16 +851,22 @@ jobs:
                 reject(new Error(`HTTP ${status || 'unknown'}`));
               }
             });
-            request.on('timeout', () => request.destroy(new Error('request timed out')));
-            request.on('error', reject);
+            const timer = setTimeout(
+              () => request.destroy(new Error('request timed out or readiness deadline exceeded')),
+              timeoutMilliseconds,
+            );
+            request.on('error', (error) => {
+              clearTimeout(timer);
+              reject(error);
+            });
             request.end();
           });
 
-          const checkEndpoint = async (endpoint) => {
-            const addresses = await resolvePublicAddresses(endpoint.url.hostname);
+          const checkEndpoint = async (endpoint, deadline) => {
+            const addresses = await resolvePublicAddresses(endpoint.url.hostname, deadline);
             try {
               return await Promise.any(addresses.map(async (address) => {
-                const status = await probe(endpoint, address);
+                const status = await probe(endpoint, address, deadline);
                 return { ready: true, status, address };
               }));
             } catch (error) {
@@ -849,7 +885,7 @@ jobs:
             attempt += 1;
             const results = await Promise.all([...pending.entries()].map(async ([value, endpoint]) => {
               try {
-                const result = await checkEndpoint(endpoint);
+                const result = await checkEndpoint(endpoint, deadline);
                 return { value, result };
               } catch (error) {
                 return { value, error };
@@ -873,8 +909,11 @@ jobs:
           }
 
           if (pending.size > 0) {
-            core.setOutput('pending_urls', [...pending.keys()].join('\n'));
-            core.setFailed(`Timed out waiting for ${pending.size} preview URL(s)`);
+            fail(
+              'timeout',
+              `Timed out waiting for ${pending.size} preview URL(s)`,
+              [...pending.keys()],
+            );
             return;
           }
 
@@ -898,7 +937,7 @@ jobs:
           ${{ inputs.comment || steps.wait_for_preview_urls.outputs.default_comment || 'Your preview environment has been published! :rocket:' }}
         edit-mode: replace
 
-    - name: "[Preview][PR Event] Report Readiness Timeout"
+    - name: "[Preview][PR Event] Report Readiness Failure"
       if: inputs.dry_run == false && inputs.preview && steps.config.outputs.mode == 'pr' && steps.wait_for_preview_urls.outcome == 'failure'
       uses: peter-evans/create-or-update-comment@v5
       with:
@@ -906,9 +945,13 @@ jobs:
         issue-number: ${{ github.event.pull_request.number }}
         body: |
           <!-- ${{ steps.comment_id.outputs.identifier }} -->
-          Preview promotion completed, but public DNS or TLS did not become ready within ${{ inputs.preview_readiness_timeout_seconds }} seconds.
+          Preview promotion completed, but its public readiness check failed (`${{ steps.wait_for_preview_urls.outputs.failure_type }}`).
 
-          The affected endpoints remain unlinked to avoid caching an unavailable preview:
+          ```text
+          ${{ steps.wait_for_preview_urls.outputs.failure_message }}
+          ```
+
+          Any affected endpoints remain unlinked to avoid caching an unavailable preview:
 
           ```text
           ${{ steps.wait_for_preview_urls.outputs.pending_urls }}

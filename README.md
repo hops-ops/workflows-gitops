@@ -335,12 +335,14 @@ false failure. Redirects and other HTTP responses below 500 count as ready,
 which supports previews protected by an OIDC redirect or authentication gate.
 
 All non-empty URLs must become ready before the custom comment is published.
-The workflow supports up to 20 public HTTPS URLs on port 443. It rejects IP
-literals, private addresses, embedded credentials, and non-HTTPS URLs. On
-timeout, it leaves a non-linked diagnostic comment and fails the readiness
-gate. `preview_urls` cannot be combined with `promotion_mode: pull-request`
-because that mode does not merge the environment change; use `direct` or
-`pull-request-merge` instead.
+The workflow supports up to 20 public HTTPS URLs on port 443. Each hostname
+must publish at least one public IPv4 A record; IPv6-only preview endpoints are
+not currently supported. It rejects IP literals, private addresses, embedded
+credentials, and non-HTTPS URLs. On validation failure or timeout, it leaves a
+non-linked diagnostic comment and fails the readiness gate. `preview_urls`
+cannot be combined with `promotion_mode: pull-request` because that mode does
+not merge the environment change; use `direct` or `pull-request-merge`
+instead.
 
 ### [Preview][Promotion PR] - Preview on Branch Push
 
