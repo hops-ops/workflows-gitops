@@ -146,6 +146,8 @@ To set up a GitHub App:
 | `values` | string | false | "" | Additional Helm values as YAML string |
 | `preview` | boolean | false | false | If true, promotes a preview (Preview type). Event mode is auto-detected. |
 | `comment` | string | false | Default preview comment | Comment body for previews (PR Event only) |
+| `preview_urls` | string | false | `""` | Newline-delimited public HTTPS URLs. For PR previews, the workflow waits for every URL before publishing the ready comment. |
+| `preview_readiness_timeout_seconds` | number | false | `1200` | Maximum readiness wait, from 1 to 3600 seconds. |
 | `dry_run` | boolean | false | false | If true, skip commit and push steps (useful for testing) |
 | `auth_mode` | string | false | `pat` | Authentication mode: `pat` for Personal Access Token, `app` for GitHub App |
 
@@ -314,7 +316,9 @@ jobs:
       environment_name: your-previews-env
       project: your-previews-env
       preview: true
-      promotion_pr: true
+      promotion_mode: pull-request-merge
+      preview_urls: |
+        https://your-app.${{ github.event.repository.name }}-pr-${{ github.event.pull_request.number }}.your-domain.com/health
       comment: |
         Your preview has been promoted!
 
@@ -322,6 +326,23 @@ jobs:
 
         The current tag is: `pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}`
 ```
+
+When `preview_urls` is set, the workflow replaces any prior ready comment with
+a non-linked provisioning message after the environment change is applied. It
+queries Cloudflare's public resolvers directly and verifies HTTPS against the
+resolved public address, so runner-local negative DNS caching cannot report a
+false failure. Redirects and other HTTP responses below 500 count as ready,
+which supports previews protected by an OIDC redirect or authentication gate.
+
+All non-empty URLs must become ready before the custom comment is published.
+The workflow supports up to 20 public HTTPS URLs on port 443. Each hostname
+must publish at least one public IPv4 A record; IPv6-only preview endpoints are
+not currently supported. It rejects IP literals, private addresses, embedded
+credentials, and non-HTTPS URLs. On validation failure or timeout, it leaves a
+non-linked diagnostic comment and fails the readiness gate. `preview_urls`
+cannot be combined with `promotion_mode: pull-request` because that mode does
+not merge the environment change; use `direct` or `pull-request-merge`
+instead.
 
 ### [Preview][Promotion PR] - Preview on Branch Push
 
