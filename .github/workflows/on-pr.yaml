@@ -9,6 +9,18 @@ permissions:
   pull-requests: write
 
 jobs:
+  test-values-merge:
+    name: Values merge and replacement regression
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Exercise the workflow's actual values step
+        run: |
+          yq -o=json .github/workflows/argocd-promote-helm.yaml > "$RUNNER_TEMP/promotion.json"
+          python3 tests/test_values_merge.py "$RUNNER_TEMP/promotion.json"
+
 
   # Release promotions would not normally go in PRs, but we include them here for testing purposes
   test-release--promotion--dry-run:
