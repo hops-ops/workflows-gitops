@@ -51,6 +51,12 @@ on:
         required: false
         default: ""
 
+      merge_existing_values:
+        type: boolean
+        required: false
+        default: true
+        description: "Merge previously deployed runtime values. Set false for authoritative values, so omitted keys are removed."
+
       preview:
         type: boolean
         required: false
@@ -444,23 +450,26 @@ jobs:
 
     - name: Merge Argo Application Values
       id: merge_values
+      env:
+        MERGE_EXISTING_VALUES: ${{ inputs.merge_existing_values }}
       run: |
-        # Merge the values, with new values taking precedence
-        MERGED_VALUES=$(yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' existing_values.yaml new_values.yaml | yq '.' --prettyPrint --no-colors)
-        
-        if [ -z "$MERGED_VALUES" ] || [ "$MERGED_VALUES" = "null" ]; then
-          echo "{}" > merged_values.yaml
-          echo "has_values=false" >> $GITHUB_OUTPUT
+        if [ "$MERGE_EXISTING_VALUES" = "true" ]; then
+          # Preserve existing callers' behavior: new values override matching keys.
+          MERGED_VALUES=$(yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' existing_values.yaml new_values.yaml | yq '.' --prettyPrint --no-colors)
         else
-          echo "$MERGED_VALUES" > merged_values.yaml
-          # Check if merged values is just an empty object
-          if [ "$MERGED_VALUES" = "{}" ]; then
-            echo "has_values=false" >> $GITHUB_OUTPUT
-          else
-            echo "has_values=true" >> $GITHUB_OUTPUT
-          fi
+          # A complete preview render is authoritative. Do not resurrect keys removed by reset.
+          MERGED_VALUES=$(yq '.' new_values.yaml --prettyPrint --no-colors)
         fi
-
+        if [ -z "$MERGED_VALUES" ] || [ "$MERGED_VALUES" = "null" ]; then
+          MERGED_VALUES="{}"
+        fi
+        echo "$MERGED_VALUES" > merged_values.yaml
+        if [ "$MERGE_EXISTING_VALUES" = "false" ] || [ "$MERGED_VALUES" != "{}" ]; then
+          # Replacement must also write {}, otherwise a reset to defaults retains old values.
+          echo "has_values=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_values=false" >> "$GITHUB_OUTPUT"
+        fi
         echo "Merged values:"
         cat merged_values.yaml
 
