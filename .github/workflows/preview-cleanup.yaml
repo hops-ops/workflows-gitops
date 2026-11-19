@@ -218,6 +218,7 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: 'github-actions[bot]'
+          # Match older comments and the hidden marker in new comments.
           body-includes: Your preview environment has been removed.
 
       - name: Create Cleanup Comment
@@ -227,7 +228,8 @@ jobs:
           comment-id: ${{ steps.fc.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           body: |
-            Your preview environment has been removed. It will be garbage collected soon.
+            <!-- Your preview environment has been removed. -->
+            Preview removal requested. Once the environment change reaches its default branch, Argo CD will remove the live resources asynchronously.
 
-            To create a new preview environment, reopen the pull request and add the preview label.
+            To recreate the preview, make sure the pull request is open and add the `preview` label.
           edit-mode: replace
