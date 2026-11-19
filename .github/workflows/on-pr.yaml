@@ -20,6 +20,8 @@ jobs:
         run: |
           yq -o=json .github/workflows/argocd-promote-helm.yaml > "$RUNNER_TEMP/promotion.json"
           python3 tests/test_values_merge.py "$RUNNER_TEMP/promotion.json"
+      - name: Exercise the preview PR merge retry
+        run: python3 tests/test_merge_promotion_pr.py
 
 
   # Release promotions would not normally go in PRs, but we include them here for testing purposes
