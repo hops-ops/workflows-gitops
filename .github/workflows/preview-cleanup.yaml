@@ -192,24 +192,32 @@ jobs:
               --repo "${ENVIRONMENT_REPOSITORY}" \
               --base "${DEFAULT_BRANCH}" \
               --head "${PR_BRANCH}" \
-              --title "Remove preview for ${{ github.repository }}#${{ github.event.pull_request.number }}" \
+              --title "chore(${{ github.event.repository.name }}): remove preview for ${{ github.repository }}#${{ github.event.pull_request.number }}" \
               --body "Removes the preview environment for ${{ github.event.pull_request.html_url }}.")
             PR_NUMBER=${PR_URL##*/}
           fi
 
           echo "number=${PR_NUMBER}" >> "${GITHUB_OUTPUT}"
 
+      - name: Checkout the promotion merge helper
+        if: steps.cleanup-pr.outputs.number != '' && inputs.promotion_mode == 'pull-request-merge'
+        uses: actions/checkout@v7
+        with:
+          repository: hops-ops/workflows-gitops
+          ref: ${{ job.workflow_sha }}
+          path: .hops-workflows
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Merge Cleanup Pull Request
-        if: steps.commit.outputs.committed == 'true' && inputs.promotion_mode == 'pull-request-merge'
+        if: steps.cleanup-pr.outputs.number != '' && inputs.promotion_mode == 'pull-request-merge'
         env:
           GH_TOKEN: ${{ steps.auth.outputs.token }}
           PR_NUMBER: ${{ steps.cleanup-pr.outputs.number }}
           ENVIRONMENT_REPOSITORY: ${{ inputs.environment_repository }}
         run: |
-          gh pr merge "${PR_NUMBER}" \
-            --repo "${ENVIRONMENT_REPOSITORY}" \
-            --squash \
-            --delete-branch
+          expected_head="$(git rev-parse HEAD)"
+          bash .hops-workflows/scripts/merge-promotion-pr.sh "$ENVIRONMENT_REPOSITORY" "$PR_NUMBER" "$expected_head"
 
       - name: Find Cleanup Comment
         if: steps.commit.outputs.committed == 'true'
