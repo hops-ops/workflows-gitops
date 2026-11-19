@@ -254,7 +254,8 @@ jobs:
               config.prBody = `Promotes ${config.name} to ${config.sourceInfo}`;
               config.prBranch = `promote/${config.name}-${refName}`;
             } else {
-              config.prTitle = `Preview ${config.name}`;
+              const source = mode === 'pr' ? `${baseRepository}#${pr.number}` : config.name;
+              config.prTitle = `feat(${context.repo.repo}): preview ${source}`;
               config.prBody = `Preview environment for ${config.sourceInfo}`;
               config.prBranch = `preview/${config.name}`;
             }
@@ -653,29 +654,53 @@ jobs:
           gh pr create --repo ${{ inputs.environment_repository }} --title "${{ env.PR_TITLE }}" --body "${{ env.PR_BODY }}" --base ${DEFAULT_BRANCH} --head ${{ env.PR_BRANCH }}
         fi
 
-    - name: "[Promotion PR] Merge Pull Request"
-      if: inputs.dry_run == false && steps.config.outputs.promotion_mode == 'pull-request-merge' && steps.commit_changes.outputs.committed_changes == 'true'
+    - name: "[Promotion PR] Find the Open Pull Request"
+      id: promotion-pr
+      if: inputs.dry_run == false && steps.config.outputs.promotion_mode == 'pull-request-merge' && (inputs.preview || steps.commit_changes.outputs.committed_changes == 'true')
       env:
         GH_TOKEN: ${{ steps.auth.outputs.token }}
         PR_BRANCH: ${{ env.PR_BRANCH }}
+        ENVIRONMENT_REPOSITORY: ${{ inputs.environment_repository }}
+        COMMITTED_CHANGES: ${{ steps.commit_changes.outputs.committed_changes }}
       run: |
         PR_NUMBER=$(gh pr list \
-          --repo ${{ inputs.environment_repository }} \
+          --repo "${ENVIRONMENT_REPOSITORY}" \
           --head "${PR_BRANCH}" \
           --state open \
           --json number \
-          --jq '.[0].number')
+          --jq '.[0].number // empty')
 
-        if [ -z "${PR_NUMBER}" ]; then
+        if [ -z "${PR_NUMBER}" ] && [ "${COMMITTED_CHANGES}" = true ]; then
           echo "No open promotion PR found for branch ${PR_BRANCH}"
           exit 1
         fi
 
-        echo "Squash-merging promotion PR #${PR_NUMBER}"
-        gh pr merge "${PR_NUMBER}" \
-          --repo ${{ inputs.environment_repository }} \
-          --squash \
-          --delete-branch
+        echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+    - name: Checkout the promotion merge helper
+      if: inputs.preview && steps.promotion-pr.outputs.number != ''
+      uses: actions/checkout@v7
+      with:
+        repository: hops-ops/workflows-gitops
+        ref: ${{ job.workflow_sha }}
+        path: .hops-workflows
+        sparse-checkout: scripts
+        persist-credentials: false
+
+    - name: "[Promotion PR] Merge Pull Request"
+      if: steps.promotion-pr.outputs.number != ''
+      env:
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        PR_NUMBER: ${{ steps.promotion-pr.outputs.number }}
+        ENVIRONMENT_REPOSITORY: ${{ inputs.environment_repository }}
+        PREVIEW: ${{ inputs.preview }}
+      run: |
+        if [ "$PREVIEW" = true ]; then
+          expected_head="$(git -C environment rev-parse HEAD)"
+          bash .hops-workflows/scripts/merge-promotion-pr.sh "$ENVIRONMENT_REPOSITORY" "$PR_NUMBER" "$expected_head"
+        else
+          gh pr merge "$PR_NUMBER" --repo "$ENVIRONMENT_REPOSITORY" --squash --delete-branch
+        fi
 
     - name: "[Dry Run][Preview][Promotion PR] Create Pull Request"
       if: inputs.dry_run && steps.config.outputs.promotion_pr == 'true' && inputs.preview && steps.commit_changes.outputs.has_changes == 'true'
